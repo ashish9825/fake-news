@@ -3,6 +3,7 @@ version: '3.8'
 services:
   fake-news-api:
     build: .
+    # This will be replaced by CI/CD pipeline with: image: ghcr.io/ashish9825/fake-news/fake-news-detector:main
     ports:
       - "8000:8000"
     environment:
@@ -12,10 +13,11 @@ services:
       - app-network
     depends_on:
       - prometheus
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.fake-news-api.rule=Host(`localhost`)"
-      - "traefik.http.services.fake-news-api.loadbalancer.server.port=8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   prometheus:
     image: prom/prometheus:latest
@@ -59,6 +61,24 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf
     depends_on:
       - fake-news-api
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
     restart: unless-stopped
     networks:
       - app-network
