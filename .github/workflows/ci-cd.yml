@@ -1,83 +1,14 @@
-name: CI/CD Pipeline for Fake News Detector
+name: Simple CI/CD for Fake News Detector
 
 on:
   push:
-    branches: [ main, develop ]
-  pull_request:
     branches: [ main ]
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/fake-news-detector
-
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python 3.9
-      uses: actions/setup-python@v4
-      with:
-        python-version: 3.9
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pytest pytest-asyncio httpx
-    
-    - name: Run tests
-      run: |
-        python -c "import fake_news_api; print('Basic import test passed')"
-        # Add more tests here as needed
-
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-    
-    - name: Log in to Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=sha
-    
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-    
     - name: Deploy to Azure VM
       uses: appleboy/ssh-action@v1.0.0
       with:
@@ -85,98 +16,23 @@ jobs:
         username: ${{ secrets.AZURE_VM_USERNAME }}
         key: ${{ secrets.AZURE_VM_SSH_KEY }}
         script: |
-          # Update system and install Docker if not present
-          if ! command -v docker &> /dev/null; then
-            echo "Installing Docker..."
-            sudo apt-get update
-            sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-            sudo apt-get update
-            sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-            sudo usermod -aG docker $USER
-          fi
-          
-          # Install Docker Compose if not present
-          if ! command -v docker-compose &> /dev/null; then
-            echo "Installing Docker Compose..."
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
-          fi
-          
-          # Create application directory
-          sudo mkdir -p /opt/fake-news-detector
-          sudo chown $USER:$USER /opt/fake-news-detector
-          cd /opt/fake-news-detector
+          # Go to application directory
+          cd /opt/fake-news-detector || mkdir -p /opt/fake-news-detector && cd /opt/fake-news-detector
           
           # Clone or update repository
           if [ ! -d ".git" ]; then
             git clone https://github.com/${{ github.repository }}.git .
           else
-            git fetch origin
-            git reset --hard origin/main
+            git pull origin main
           fi
           
-          # Stop existing containers
+          # Stop and restart containers
           docker-compose down || true
+          docker-compose up -d --build
           
-          # Login to GitHub Container Registry
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+          # Wait and check status
+          sleep 20
+          docker-compose ps
           
-          # Pull latest images
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main || echo "Failed to pull image, will build locally"
-          
-          # Create a production docker-compose file
-          cp docker-compose.yml docker-compose.prod.yml
-          
-          # Update docker-compose to use the built image
-          sed -i 's|build: \.|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main|g' docker-compose.prod.yml
-          
-          # If image pull failed, use local build
-          if ! docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main; then
-            echo "Using local build instead of registry image"
-            cp docker-compose.yml docker-compose.prod.yml
-          fi
-          
-          # Start services with production compose file
-          docker-compose -f docker-compose.prod.yml up -d
-          
-          # Wait for services to be ready
-          sleep 30
-          
-          # Check if services are running
-          docker-compose -f docker-compose.prod.yml ps
-          
-          # Test the application
-          curl -f http://localhost:8000/health || echo "Health check failed"
-          curl -f http://localhost:9090/-/ready || echo "Prometheus not ready"
-          curl -f http://localhost:3000/api/health || echo "Grafana not ready"
-          
-          # Clean up old images
-          docker image prune -f
-          
-          # Set up firewall rules if UFW is available
-          if command -v ufw &> /dev/null; then
-            sudo ufw allow 22/tcp || true
-            sudo ufw allow 80/tcp || true
-            sudo ufw allow 443/tcp || true
-            sudo ufw allow 3000/tcp || true
-            sudo ufw allow 9090/tcp || true
-          fi
-          
-          echo "Deployment completed successfully!"
-          echo "Application URL: http://$(curl -s ifconfig.me || curl -s ipinfo.io/ip)"
-
-  notify:
-    needs: [test, build, deploy]
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-    - name: Notify deployment status
-      run: |
-        if [ "${{ needs.deploy.result }}" == "success" ]; then
-          echo "✅ Deployment successful!"
-        else
-          echo "❌ Deployment failed!"
-        fi
+          echo "✅ Deployment completed!"
+          echo "🌐 App URL: http://$(curl -s ifconfig.me || echo 'your-vm-ip')"
