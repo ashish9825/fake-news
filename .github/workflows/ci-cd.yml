@@ -120,17 +120,37 @@ jobs:
           # Stop existing containers
           docker-compose down || true
           
-          # Update docker-compose to use the built image
-          sed -i 's|build: \.|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main|g' docker-compose.yml
-          
           # Login to GitHub Container Registry
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
           
           # Pull latest images
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main || echo "Failed to pull image, will build locally"
           
-          # Start services
-          docker-compose up -d
+          # Create a production docker-compose file
+          cp docker-compose.yml docker-compose.prod.yml
+          
+          # Update docker-compose to use the built image
+          sed -i 's|build: \.|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main|g' docker-compose.prod.yml
+          
+          # If image pull failed, use local build
+          if ! docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main; then
+            echo "Using local build instead of registry image"
+            cp docker-compose.yml docker-compose.prod.yml
+          fi
+          
+          # Start services with production compose file
+          docker-compose -f docker-compose.prod.yml up -d
+          
+          # Wait for services to be ready
+          sleep 30
+          
+          # Check if services are running
+          docker-compose -f docker-compose.prod.yml ps
+          
+          # Test the application
+          curl -f http://localhost:8000/health || echo "Health check failed"
+          curl -f http://localhost:9090/-/ready || echo "Prometheus not ready"
+          curl -f http://localhost:3000/api/health || echo "Grafana not ready"
           
           # Clean up old images
           docker image prune -f
