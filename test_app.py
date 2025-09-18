@@ -29,7 +29,7 @@ def test_metrics_endpoint():
     """Test the metrics endpoint"""
     response = client.get("/metrics")
     assert response.status_code == 200
-    assert "fake_news_predictions_total" in response.text
+    assert "fake_news_predictions_totals" in response.text
     assert "fake_news_uptime_seconds" in response.text
 
 def test_preprocess_text():
